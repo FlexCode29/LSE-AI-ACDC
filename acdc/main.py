@@ -97,6 +97,7 @@ except Exception as e:
     print(f"Could not import `tracr` because {e}; the rest of the file should work but you cannot use the tracr tasks")
 from acdc.docstring.utils import get_all_docstring_things
 from acdc.logic_gates.utils import get_all_logic_gate_things
+from acdc.icl.utils import get_all_icl_things
 from acdc.acdc_utils import (
     make_nd_dict,
     reset_network,
@@ -145,7 +146,7 @@ torch.autograd.set_grad_enabled(False)
 parser = argparse.ArgumentParser(description="Used to launch ACDC runs. Only task and threshold are required")
 
 
-task_choices = ['ioi', 'docstring', 'induction', 'tracr-reverse', 'tracr-proportion', 'greaterthan', 'or_gate']
+task_choices = ['ioi', 'docstring', 'induction', 'tracr-reverse', 'tracr-proportion', 'greaterthan', 'or_gate', 'icl']
 parser.add_argument('--task', type=str, required=True, choices=task_choices, help=f'Choose a task from the available options: {task_choices}')
 parser.add_argument('--threshold', type=float, required=True, help='Value for THRESHOLD')
 parser.add_argument('--first-cache-cpu', type=str, required=False, default="True", help='Value for FIRST_CACHE_CPU (the old name for the `online_cache`)')
@@ -160,12 +161,12 @@ parser.add_argument("--wandb-dir", type=str, default="/tmp/wandb")
 parser.add_argument("--wandb-mode", type=str, default="online")
 parser.add_argument('--indices-mode', type=str, default="normal")
 parser.add_argument('--names-mode', type=str, default="normal")
-parser.add_argument('--device', type=str, default="cuda")
+parser.add_argument('--device', type=str, default="cpu")
 parser.add_argument('--reset-network', type=int, default=0, help="Whether to reset the network we're operating on before running interp on it")
 parser.add_argument('--metric', type=str, default="kl_div", help="Which metric to use for the experiment")
 parser.add_argument('--torch-num-threads', type=int, default=0, help="How many threads to use for torch (0=all)")
 parser.add_argument('--seed', type=int, default=1234)
-parser.add_argument("--max-num-epochs",type=int, default=100_000)
+parser.add_argument("--max-num-epochs",type=int, default=10)
 parser.add_argument('--single-step', action='store_true', help='Use single step, mostly for testing')
 parser.add_argument("--abs-value-threshold", action='store_true', help='Use the absolute value of the result to check threshold')
 
@@ -179,7 +180,7 @@ if ipython is not None:
 --indices-mode=reverse\
 --first-cache-cpu=False\
 --second-cache-cpu=False\
---max-num-epochs=100000""".split("\\\n")]
+--max-num-epochs=10""".split("\\\n")]
     )
 else:
     # read from command line
@@ -242,6 +243,10 @@ elif TASK == "or_gate":
         mode="OR",
         num_examples=num_examples,
         seq_len=seq_len,
+        device=DEVICE,
+    )
+elif TASK == "icl":
+    things = get_all_icl_things(
         device=DEVICE,
     )
 elif TASK == "tracr-reverse":
