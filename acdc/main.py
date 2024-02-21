@@ -166,7 +166,7 @@ parser.add_argument('--reset-network', type=int, default=0, help="Whether to res
 parser.add_argument('--metric', type=str, default="kl_div", help="Which metric to use for the experiment")
 parser.add_argument('--torch-num-threads', type=int, default=0, help="How many threads to use for torch (0=all)")
 parser.add_argument('--seed', type=int, default=1234)
-parser.add_argument("--max-num-epochs",type=int, default=10)
+parser.add_argument("--max-num-epochs",type=int, default=100000)
 parser.add_argument('--single-step', action='store_true', help='Use single step, mostly for testing')
 parser.add_argument("--abs-value-threshold", action='store_true', help='Use the absolute value of the result to check threshold')
 
@@ -180,7 +180,7 @@ if ipython is not None:
 --indices-mode=reverse\
 --first-cache-cpu=False\
 --second-cache-cpu=False\
---max-num-epochs=10""".split("\\\n")]
+--max-num-epochs=100000""".split("\\\n")]
     )
 else:
     # read from command line
@@ -383,8 +383,8 @@ for i in range(args.max_num_epochs):
     print(i, "-" * 50)
     print(exp.count_no_edges())
 
-    if i == 0:
-        exp.save_edges("edges.pkl")
+    if i % 10 == 0:
+        exp.save_edges(f"edges_{i+1}.pkl")
 
     if exp.current_node is None or SINGLE_STEP:
         show(
