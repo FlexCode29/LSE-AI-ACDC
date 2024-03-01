@@ -3,7 +3,6 @@ out2.txt
 out1.txt
 acdc.egg-info/
 *.sage.py
-*.pt
 *.pkl
 better*.json
 histories/
