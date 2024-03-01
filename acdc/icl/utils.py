@@ -1,86 +1,127 @@
 from functools import partial
 import torch
-from transformer_lens.HookedTransformer import HookedTransformer
 from acdc.docstring.utils import AllDataThings
 import torch.nn.functional as F
-from numpy import array
+
+import os
+import sys
+
+import matplotlib.pyplot as plt
+import torch.nn as nn
+from fancy_einsum import einsum
+
+from samplers import get_data_sampler
+from tasks import get_task_sampler
+
+from munch import Munch
+import yaml
+
+class PassThroughEmbed(nn.Module):
+        def __init__(self, cfg=None):
+            super().__init__()
+            # No parameters needed, but constructor accepts cfg for compatibility
+
+        def forward(self, tokens):
+            # Directly return the input without any modifications
+            return tokens
 
 
-def get_gpt2(device="cpu"):
-    tl_model = HookedTransformer.from_pretrained("gpt2")
-    tl_model = tl_model.to(device)
+def get_model(path, device="cpu"):
+
+    model = torch.load(path, map_location=device)
+    tl_model = model.to(device)
     tl_model.set_use_attn_result(True)
     tl_model.set_use_split_qkv_input(True)
     if "use_hook_mlp_in" in tl_model.cfg.to_dict():
         tl_model.set_use_hook_mlp_in(True)
     return tl_model
 
-def generate_data(model, device, x_initial, y_initial, icl_length, n, offset=0):
-    prompts = []
-    correct_answers = []
-    # Initialize x and y for the sequence
-    x, y = x_initial + offset, y_initial + offset
+def validation_metric(predictions, labels, return_one_element, device):
+    predictions = predictions.to(device)
+
+    sliced_preds = predictions[:, ::2, 0][:, torch.arange(labels.shape[1])]
+
+    loss = (labels - sliced_preds).square().detach().numpy().mean(axis=0)[-5:].mean()
+    return loss
 
 
-    for i in range(n):
-        prompt = ''
-        for j in range(icl_length + 1):
-            if j < icl_length:
-                prompt += f"Input: {j}, Output: {j * x + y}\n"
-            else:
-                prompt += f"Input: {j}, Output:"
-                correct_answers.append(j * x + y)  # Record the correct answer for the last input
-        prompts.append(prompt)
-        # Update x and y after generating each full prompt set
-        if i % 2 == 0:
-            x += 1
-        else:
-            y += 1
+def generate_data(conf, read_in_weight, read_in_bias, max_len):
+    # generate random data (20d points on a gaussian)
+
+    n_dims = conf.model.n_dims
+    batch_size = conf.training.batch_size
+
+    data_sampler = get_data_sampler(conf.training.data, n_dims)
+    task_sampler = get_task_sampler(
+        conf.training.task,
+        n_dims,
+        batch_size,
+        **conf.training.task_kwargs
+    )
+    task = task_sampler()
+    xs = data_sampler.sample_xs(b_size=batch_size, n_points=conf.training.curriculum.points.end) # should be n_points=conf.training.curriculum.points.end, but has been hacked to work for the max_len of 101 (202)
+    ys = task.evaluate(xs)
 
 
-    # Convert prompts into tokens
-    data_tokens = [model.to_tokens(prompt).to(device) for prompt in prompts]
-    correct_answers_tensor = torch.tensor(correct_answers).to(torch.double).unsqueeze(-1).to(device)
-    return prompts, correct_answers_tensor
+    # the original model first merges the sequences in z, which we do here (z can have all but the last y since it's causal and intermediate ys are for icl and later icl lenght eval
 
+    batch, n_ctx, d_xs = xs.shape
 
+    ys_wide = torch.cat(
+        (
+            ys.view(batch, n_ctx, 1),
+            torch.zeros(batch, n_ctx, d_xs - 1, device=ys.device),
+        ),
+        axis=2,
+    )
+    my_zs = torch.stack((xs, ys_wide), dim=2)
+    my_zs = my_zs.view(batch, 2 * n_ctx, d_xs)
 
+    # apply the read_in transformation
+    transformed_zs = einsum("batch n_ctx d_xs, d_model d_xs -> batch n_ctx d_model", my_zs, read_in_weight) + read_in_bias
 
-def get_all_icl_things(device='cpu', x=2, y=1, icl_length=12, n=10, return_one_element: bool = False) -> AllDataThings:
-    model = get_gpt2(device)
+    # apply padding
 
-    # Generate validation data
-    validation_data, validation_correct_answers = generate_data(model, device, x, y, icl_length, n, offset=0)
+    current_len = transformed_zs.shape[1]
 
-    # Generate validation patch data with different x and y values (using offset)
-    validation_patch_data, _ = generate_data(model, device, x, y, icl_length, n, offset=n)
+    pad_len = max(max_len - current_len, 0)
 
-    # Generate separate test data with further different x and y values
-    test_data, test_correct_answers = generate_data(model, device, x, y, icl_length, n, offset= n * 2)
+    # Apply padding to the right of the second dimension
+    # The padding order in F.pad is (left, right, top, bottom) for 4D input, but here it's the equivalent for 3D
+    return F.pad(transformed_zs, (0, 0, 0, pad_len), "constant", 0), ys
 
-    # Generate test patch data with different x and y values (using offset)
-    test_patch_data, _ = generate_data(model, device, x, y, icl_length, n, offset= n * 3)
+def get_conf():
+    run_dir = "models"
 
+    task = "linear_regression"
+    run_id = "pretrained"  # if you train more models, replace with the run_id from the table above
+    run_path = os.path.join(run_dir, task, run_id)
+    config_path = os.path.join(run_path, "config.yaml")
 
-    def validation_metric(output, correct, return_one_element, device):
-
-        output = output.to(device)
+    with open(config_path) as fp:  # we don't Quinfig it to avoid inherits
+        conf = Munch.fromDict(yaml.safe_load(fp))
     
-        # Select the logits for the last token in each sequence
-        # model_output shape: [batch_size, seq_length, vocab_size] => [10, 103, 50257]
-        # We select [:, -1, :] to get the last token logits for each example in the batch
-        last_token_logits = output[:, -1, :]  # Shape: [10, 50257]
+    return conf
+        
+
+
+def get_all_icl_things(device='cpu', return_one_element=False) -> AllDataThings:
+
     
-        # Now, find the indices of the 10 highest logits for the last token across the batch
-        # We use torch.topk to get the top 10 logits' indices for each example
-        topk_values, topk_indices = torch.topk(last_token_logits, 1, dim=1) 
 
-        predictions = model.to_string(topk_indices)
-        predictions = torch.tensor([int(pred) for pred in predictions]).to(torch.double).unsqueeze(-1).to(device)
+    conf = get_conf()
 
-        # Calculate MSE
-        mse = F.mse_loss(predictions, correct, reduction='mean' if not return_one_element else 'sum')
-        return mse
+    model = get_model('hooked_regressor.pt', device)
+    read_in_weight = torch.load('read_in_weight.pt', map_location=device)
+    read_in_bias = torch.load('read_in_bias.pt', map_location=device)
+
+    validation_data, validation_correct_answers = generate_data(conf, read_in_weight, read_in_bias, model.cfg.n_ctx)
+    validation_patch_data, _ = generate_data(conf, read_in_weight, read_in_bias, model.cfg.n_ctx)
+
+    test_data, test_correct_answers = generate_data(conf, read_in_weight, read_in_bias, model.cfg.n_ctx)
+    test_patch_data, _ = generate_data(conf, read_in_weight, read_in_bias, model.cfg.n_ctx)
+
+
 
     return AllDataThings(
         tl_model=model,
@@ -98,34 +139,23 @@ def get_all_icl_things(device='cpu', x=2, y=1, icl_length=12, n=10, return_one_e
 
 
 # Testing (pay attention, this is now buggd and would require valid function outside of get things):
-'''
+
 import unittest
 class TestICLDataAndModel(unittest.TestCase):
     def setUp(self):
         self.device = 'cpu'
-        self.model = HookedTransformer.from_pretrained("gpt2").to(self.device)
-        self.x_initial = 2
-        self.y_initial = 1
-        self.icl_length = 12
-        self.n = 10
-
-    def test_data_generation(self):
-        data, correct_answers = generate_data(self.model, self.device, self.x_initial, self.y_initial, self.icl_length, self.n)
-        # Ensure data and correct answers are generated for each prompt
-        self.assertEqual(len(data), self.n)
-        self.assertTrue(correct_answers.shape[0], self.n)
-        # Ensure the shape of correct_answers tensor is as expected
-        self.assertEqual(correct_answers.shape, (self.n, 1))
+        self.model = get_model('hooked_regressor.pt')
+        self.read_in_weight = torch.load('read_in_weight.pt', map_location='cpu')
+        self.read_in_bias = torch.load('read_in_bias.pt', map_location='cpu')
+        self.conf = get_conf()
 
     def test_validation_metric(self):
-        data, correct_answers = generate_data(self.model, self.device, self.x_initial, self.y_initial, self.icl_length, self.n)
+        data, correct_answers = generate_data(self.conf, self.read_in_weight, self.read_in_bias, self.model.cfg.n_ctx)
         # Assuming validation_metric is defined elsewhere in your code
-        logits = self.model(data, return_type="logits")
-        mse = validation_metric(model=self.model, model_output=logits, correct=correct_answers, return_one_element=False, device=self.device)
-        self.assertIsInstance(mse, torch.Tensor)
+        preds = self.model(data)
+        mse = validation_metric(predictions=preds, labels=correct_answers, return_one_element=False, device=self.device)
         print('This is the MSE: ', mse)
 
 # Execute tests when the script is run
 if __name__ == '__main__':
     unittest.main(argv=['first-arg-is-ignored'], exit=False)
-'''
