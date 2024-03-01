@@ -23,7 +23,6 @@ class PassThroughEmbed(nn.Module):
 
         def forward(self, tokens):
             # Directly return the input without any modifications
-            print(tokens.shape)
             return tokens
 
 
