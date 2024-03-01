@@ -10,8 +10,8 @@ import matplotlib.pyplot as plt
 import torch.nn as nn
 from fancy_einsum import einsum
 
-from samplers import get_data_sampler
-from tasks import get_task_sampler
+from acdc.icl.samplers import get_data_sampler
+from acdc.icl.tasks import get_task_sampler
 
 from munch import Munch
 import yaml
@@ -23,6 +23,7 @@ class PassThroughEmbed(nn.Module):
 
         def forward(self, tokens):
             # Directly return the input without any modifications
+            print(tokens.shape)
             return tokens
 
 
@@ -91,7 +92,7 @@ def generate_data(conf, read_in_weight, read_in_bias, max_len):
     return F.pad(transformed_zs, (0, 0, 0, pad_len), "constant", 0), ys
 
 def get_conf():
-    run_dir = "models"
+    run_dir = "icl/models"
 
     task = "linear_regression"
     run_id = "pretrained"  # if you train more models, replace with the run_id from the table above
@@ -111,9 +112,9 @@ def get_all_icl_things(device='cpu', return_one_element=False) -> AllDataThings:
 
     conf = get_conf()
 
-    model = get_model('hooked_regressor.pt', device)
-    read_in_weight = torch.load('read_in_weight.pt', map_location=device)
-    read_in_bias = torch.load('read_in_bias.pt', map_location=device)
+    model = get_model('icl/hooked_regressor.pt', device)
+    read_in_weight = torch.load('icl/read_in_weight.pt', map_location=device)
+    read_in_bias = torch.load('icl/read_in_bias.pt', map_location=device)
 
     validation_data, validation_correct_answers = generate_data(conf, read_in_weight, read_in_bias, model.cfg.n_ctx)
     validation_patch_data, _ = generate_data(conf, read_in_weight, read_in_bias, model.cfg.n_ctx)
@@ -139,7 +140,7 @@ def get_all_icl_things(device='cpu', return_one_element=False) -> AllDataThings:
 
 
 # Testing (pay attention, this is now buggd and would require valid function outside of get things):
-
+'''
 import unittest
 class TestICLDataAndModel(unittest.TestCase):
     def setUp(self):
@@ -157,5 +158,7 @@ class TestICLDataAndModel(unittest.TestCase):
         print('This is the MSE: ', mse)
 
 # Execute tests when the script is run
+
 if __name__ == '__main__':
     unittest.main(argv=['first-arg-is-ignored'], exit=False)
+'''

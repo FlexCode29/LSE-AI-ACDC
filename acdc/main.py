@@ -78,6 +78,8 @@ import yaml
 import pandas
 from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
 
+from icl.utils import PassThroughEmbed
+
 import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.io as pio
