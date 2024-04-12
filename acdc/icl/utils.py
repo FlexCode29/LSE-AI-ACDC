@@ -1,6 +1,6 @@
 from functools import partial
 import torch
-from acdc.docstring.utils import AllDataThings
+
 import torch.nn.functional as F
 
 import os
@@ -12,6 +12,7 @@ from fancy_einsum import einsum
 
 from acdc.icl.samplers import get_data_sampler
 from acdc.icl.tasks import get_task_sampler
+from acdc.docstring.utils import AllDataThings
 
 from munch import Munch
 import yaml
@@ -23,11 +24,10 @@ class PassThroughEmbed(nn.Module):
 
         def forward(self, tokens):
             # Directly return the input without any modifications
-            print(tokens.shape)
             return tokens
 
 
-def get_model(path, device="cpu"):
+def get_model(path, device="cuda"):
 
     model = torch.load(path, map_location=device)
     tl_model = model.to(device)
@@ -37,16 +37,16 @@ def get_model(path, device="cpu"):
         tl_model.set_use_hook_mlp_in(True)
     return tl_model
 
-def validation_metric(predictions, labels, return_one_element, device):
+def validation_metric(predictions, correct, return_one_element, device):
     predictions = predictions.to(device)
 
-    sliced_preds = predictions[:, ::2, 0][:, torch.arange(labels.shape[1])]
+    sliced_preds = predictions[:, ::2, 0][:, torch.arange(correct.shape[1])]
 
-    loss = (labels - sliced_preds).square().detach().numpy().mean(axis=0)[-5:].mean()
+    loss = (correct.to(device) - sliced_preds).square().detach().to(device).numpy().mean(axis=0)[-5:].mean()
     return loss
 
 
-def generate_data(conf, read_in_weight, read_in_bias, max_len):
+def generate_data(conf, read_in_weight, read_in_bias, max_len, device='cuda'):
     # generate random data (20d points on a gaussian)
 
     n_dims = conf.model.n_dims
@@ -76,15 +76,15 @@ def generate_data(conf, read_in_weight, read_in_bias, max_len):
         axis=2,
     )
     my_zs = torch.stack((xs, ys_wide), dim=2)
-    my_zs = my_zs.view(batch, 2 * n_ctx, d_xs)
+    my_zs = my_zs.view(batch, 2 * n_ctx, d_xs).to(torch.device(device))
 
     # apply the read_in transformation
-    transformed_zs = einsum("batch n_ctx d_xs, d_model d_xs -> batch n_ctx d_model", my_zs, read_in_weight) + read_in_bias
+    transformed_zs = einsum("batch n_ctx d_xs, d_model d_xs -> batch n_ctx d_model", my_zs.to(device), read_in_weight.to(device)) + read_in_bias.to(device)
 
     # apply padding
 
     current_len = transformed_zs.shape[1]
-
+    max_len = 64 # HORRID TECH DEBT
     pad_len = max(max_len - current_len, 0)
 
     # Apply padding to the right of the second dimension
@@ -92,11 +92,7 @@ def generate_data(conf, read_in_weight, read_in_bias, max_len):
     return F.pad(transformed_zs, (0, 0, 0, pad_len), "constant", 0), ys
 
 def get_conf():
-    run_dir = "icl/models"
-
-    task = "linear_regression"
-    run_id = "pretrained"  # if you train more models, replace with the run_id from the table above
-    run_path = os.path.join(run_dir, task, run_id)
+    run_path = './acdc/icl'
     config_path = os.path.join(run_path, "config.yaml")
 
     with open(config_path) as fp:  # we don't Quinfig it to avoid inherits
@@ -106,15 +102,15 @@ def get_conf():
         
 
 
-def get_all_icl_things(device='cpu', return_one_element=False) -> AllDataThings:
+def get_all_icl_things(device='cuda', return_one_element=False) -> AllDataThings:
 
     
 
     conf = get_conf()
 
-    model = get_model('icl/hooked_regressor.pt', device)
-    read_in_weight = torch.load('icl/read_in_weight.pt', map_location=device)
-    read_in_bias = torch.load('icl/read_in_bias.pt', map_location=device)
+    model = get_model('./acdc/icl/final_toy_model.pt', device)
+    read_in_weight = torch.load('./acdc/icl/final_toy_read_in_weight.pt', map_location=device)
+    read_in_bias = torch.load('./acdc/icl/final_toy_read_in_bias.pt', map_location=device)
 
     validation_data, validation_correct_answers = generate_data(conf, read_in_weight, read_in_bias, model.cfg.n_ctx)
     validation_patch_data, _ = generate_data(conf, read_in_weight, read_in_bias, model.cfg.n_ctx)
